@@ -1,4 +1,4 @@
-# copycon-backuper
+# trio-backuper
 
 Централизованный бэкапер для **PostgreSQL**, **MongoDB** и **S3‑совместимого хранилища** (MinIO).
 

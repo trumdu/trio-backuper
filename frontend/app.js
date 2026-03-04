@@ -238,7 +238,7 @@ const App = {
   <div class="container">
     <div class="header">
       <div>
-        <div class="title">copycon-backuper</div>
+        <div class="title">trio-backuper</div>
         <div class="subtitle">Централизованные бэкапы PostgreSQL / MongoDB / S3(MinIO)</div>
       </div>
       <div class="row">

@@ -1,7 +1,7 @@
 services:
   app:
     build: .
-    container_name: copycon-backuper
+    container_name: trio-backuper
     ports:
       - "8000:8000"
     env_file:
