@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import select
+
+from backend.app.db.models import Job
+from backend.app.db.session import SessionLocal
+from backend.app.backups.runner import enqueue_run, shutdown_running_tasks
+
+log = logging.getLogger(__name__)
+
+
+class SchedulerManager:
+    def __init__(self) -> None:
+        self._scheduler = AsyncIOScheduler(timezone="UTC")
+        self._started = False
+
+    async def start(self) -> None:
+        if self._started:
+            return
+        self._scheduler.start()
+        self._started = True
+        self.sync_from_db()
+        log.info("scheduler_started")
+
+    async def shutdown(self) -> None:
+        if not self._started:
+            return
+        self._scheduler.shutdown(wait=False)
+        await shutdown_running_tasks()
+        self._started = False
+        log.info("scheduler_stopped")
+
+    def sync_from_db(self) -> None:
+        with SessionLocal() as db:
+            jobs = db.scalars(select(Job).where(Job.enabled == True)).all()  # noqa: E712
+            for job in jobs:
+                self.upsert_job(job.id, job.schedule_cron)
+
+    def upsert_job(self, job_id: int, cron_expr: str) -> None:
+        if not self._started:
+            return
+        trigger = CronTrigger.from_crontab(cron_expr, timezone="UTC")
+        aps_id = f"job:{job_id}"
+
+        def _fire():
+            asyncio.create_task(enqueue_run(job_id, reason="schedule"))
+
+        self._scheduler.add_job(
+            _fire,
+            trigger=trigger,
+            id=aps_id,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=60,
+        )
+        log.info("job_scheduled", extra={"job_id": job_id, "cron": cron_expr})
+
+    def remove_job(self, job_id: int) -> None:
+        if not self._started:
+            return
+        aps_id = f"job:{job_id}"
+        try:
+            self._scheduler.remove_job(aps_id)
+            log.info("job_unscheduled", extra={"job_id": job_id})
+        except Exception:
+            # ignore if not exists
+            pass
+
+
+scheduler_manager = SchedulerManager()
