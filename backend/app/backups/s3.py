@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import os
+import logging
 from pathlib import Path
-from typing import Any, Optional
+from pathlib import PurePosixPath
+from typing import Any
 
 import boto3
 from botocore.config import Config
 
 from backend.app.backups.retry import retry_async
 from backend.app.backups.base import BackupSource, RawBackup
+
+log = logging.getLogger(__name__)
 
 
 def _endpoint_url(cfg: dict[str, Any]) -> str:
@@ -35,7 +38,7 @@ def _client(cfg: dict[str, Any]):
         aws_secret_access_key=str(cfg.get("secret_key") or ""),
         region_name=str(cfg["region"]) if cfg.get("region") else None,
         config=c,
-        verify=True,
+        verify=bool(cfg.get("verify_ssl", True)),
     )
 
 
@@ -66,13 +69,24 @@ async def backup_bucket(
         paginator = cli.get_paginator("list_objects_v2")
         downloaded = 0
         bytes_written = 0
+        skipped = 0
 
-        for page in paginator.paginate(Bucket=bucket):
+        log.info(
+            "s3_download_start",
+            extra={"bucket": bucket, "endpoint": _endpoint_url(cfg), "dir": str(target_dir)},
+        )
+
+        for page in paginator.paginate(Bucket=bucket, PaginationConfig={"PageSize": 1000}):
             for obj in page.get("Contents", []) or []:
-                key = obj["Key"]
+                key = str(obj["Key"])
                 if key.endswith("/"):
                     continue
-                dst = target_dir / key
+                # Prevent path traversal / absolute paths.
+                rel = PurePosixPath(key.lstrip("/\\"))
+                if ".." in rel.parts:
+                    skipped += 1
+                    continue
+                dst = target_dir / Path(*rel.parts)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 with open(dst, "wb") as f:
                     cli.download_fileobj(bucket, key, f)
@@ -82,7 +96,17 @@ async def backup_bucket(
                 except OSError:
                     pass
 
-        return f"s3 download ok: objects={downloaded} bytes={bytes_written} dir={target_dir}"
+                if downloaded % 200 == 0:
+                    log.info(
+                        "s3_download_progress",
+                        extra={"bucket": bucket, "objects": downloaded, "bytes": bytes_written, "skipped": skipped},
+                    )
+
+        log.info(
+            "s3_download_done",
+            extra={"bucket": bucket, "objects": downloaded, "bytes": bytes_written, "skipped": skipped, "dir": str(target_dir)},
+        )
+        return f"s3 download ok: objects={downloaded} bytes={bytes_written} skipped={skipped} dir={target_dir}"
 
     log_text = await asyncio.to_thread(_download_all)
     return target_dir, log_text

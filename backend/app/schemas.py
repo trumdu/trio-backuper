@@ -51,6 +51,7 @@ class S3ConfigIn(BaseModel):
     region: Optional[str] = None
     use_ssl: bool = True
     path_style: bool = True
+    verify_ssl: bool = True
 
 
 class JobBase(BaseModel):
