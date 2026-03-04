@@ -9,7 +9,7 @@ from backend.app.core.config import settings
 from backend.app.db.session import get_db
 from backend.app.schemas import JobCreate, JobOut, JobUpdate, RunLogOut, RunOut
 from backend.app.scheduler.scheduler import scheduler_manager
-from backend.app.services.config_jobs import sync_jobs_from_config_file
+from backend.app.services.config_jobs import get_config_job_names, sync_jobs_from_config_file
 from backend.app.services.jobs_service import (
     delete_job,
     get_job_model,
@@ -34,7 +34,11 @@ def jobs_sync_from_config(db: Session = Depends(get_db)) -> dict:
 
 @router.get("/jobs", response_model=list[JobOut])
 def jobs_list(db: Session = Depends(get_db)) -> list[JobOut]:
-    return list_jobs(db)
+    jobs = list_jobs(db)
+    cfg_names = get_config_job_names(settings.config_path)
+    for j in jobs:
+        j.from_config = j.name in cfg_names
+    return jobs
 
 
 @router.post("/jobs", response_model=JobOut)
@@ -50,7 +54,10 @@ def jobs_get(job_id: int, db: Session = Depends(get_db)) -> JobOut:
     job = get_job_model(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job_to_out(db, job)
+    out = job_to_out(db, job)
+    cfg_names = get_config_job_names(settings.config_path)
+    out.from_config = out.name in cfg_names
+    return out
 
 
 @router.put("/jobs/{job_id}", response_model=JobOut)

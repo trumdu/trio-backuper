@@ -129,6 +129,8 @@ class JobOut(BaseModel):
     updated_at: datetime
     last_run_status: Optional[RunStatus] = None
 
+    from_config: Optional[bool] = None
+
     postgres: Optional[dict[str, Any]] = None
     mongo: Optional[dict[str, Any]] = None
     s3: Optional[dict[str, Any]] = None

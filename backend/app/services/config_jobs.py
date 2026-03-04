@@ -32,6 +32,43 @@ def _normalize_jobs_payload(raw: Any) -> list[dict[str, Any]]:
     raise ValueError("config root must be an object, a list, or an object with 'jobs'")
 
 
+def get_config_job_names(config_path: str) -> set[str]:
+    """
+    Lightweight helper to detect which job names are present in config.json.
+    Used to mark jobs as coming from config in API responses.
+    """
+    p = Path(config_path)
+    fallback_paths: list[Path] = []
+    if not p.is_absolute():
+        fallback_paths.append(Path("/data") / p.name)
+
+    candidate_paths = [p, *fallback_paths]
+    chosen: Path | None = None
+    for cp in candidate_paths:
+        if cp.exists() and cp.is_file():
+            chosen = cp
+            break
+
+    if not chosen:
+        return set()
+
+    try:
+        raw = json.loads(chosen.read_text(encoding="utf-8"))
+        raw_jobs = _normalize_jobs_payload(raw)
+    except Exception:
+        # If config is broken - just don't mark anything as from_config.
+        return set()
+
+    names: set[str] = set()
+    for job_raw in raw_jobs:
+        if isinstance(job_raw, dict) and "name" in job_raw:
+            try:
+                names.add(str(job_raw["name"]))
+            except Exception:
+                continue
+    return names
+
+
 def _find_existing_job_by_name(db: Session, name: str) -> Job | None:
     return db.scalars(select(Job).where(Job.name == name).limit(1)).first()
 

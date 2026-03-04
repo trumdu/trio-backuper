@@ -393,9 +393,23 @@ const App = {
               <div class="muted">cron: <span class="mono">{{ selectedJob.schedule_cron }}</span></div>
             </div>
             <div class="row">
-              <button class="btn" @click="editJob(selectedJob)" :disabled="loading">Редактировать</button>
+              <button
+                class="btn"
+                v-if="!selectedJob.from_config"
+                @click="editJob(selectedJob)"
+                :disabled="loading"
+              >
+                Редактировать
+              </button>
               <button class="btn primary" @click="runNow(selectedJob)" :disabled="loading">Запустить сейчас</button>
-              <button class="btn danger" @click="deleteJob(selectedJob)" :disabled="loading">Удалить</button>
+              <button
+                class="btn danger"
+                v-if="!selectedJob.from_config"
+                @click="deleteJob(selectedJob)"
+                :disabled="loading"
+              >
+                Удалить
+              </button>
             </div>
           </div>
 
