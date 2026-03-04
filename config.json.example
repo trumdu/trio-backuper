@@ -28,7 +28,8 @@
       "bucket": "backups",
       "region": "",
       "use_ssl": false,
-      "path_style": true
+      "path_style": true,
+      "verify_ssl": true
     }
   }
 ]
