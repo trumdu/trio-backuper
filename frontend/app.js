@@ -65,22 +65,41 @@ const App = {
       editMode: false,
       jobForm: null,
       runLog: "",
+      selectedRunId: null,
+
+      pollTimer: null,
+      pollInFlight: false,
     };
   },
   async mounted() {
-    await this.refreshAll();
+    await this.refreshAll({ sync: true });
+    this.pollTimer = setInterval(() => {
+      this.pollActive();
+    }, 10_000);
+  },
+  unmounted() {
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.pollTimer = null;
   },
   methods: {
     fmtBytes,
     badgeClass,
-    async refreshAll() {
-      // Sync jobs from config.json (if present), then refresh UI.
-      try {
-        await api.post("/jobs/sync-from-config", {});
-      } catch (e) {
-        this.error = String(e);
+    async syncFromConfig() {
+      await api.post("/jobs/sync-from-config", {});
+    },
+    async refreshAll({ sync } = { sync: false }) {
+      if (sync) {
+        try {
+          await this.syncFromConfig();
+        } catch (e) {
+          this.error = String(e);
+        }
       }
       await Promise.all([this.loadDashboard(), this.loadJobs()]);
+
+      if (this.selectedJob?.id) {
+        await this.loadRuns(this.selectedJob.id);
+      }
     },
     async loadDashboard() {
       try {
@@ -190,15 +209,45 @@ const App = {
         this.loading = false;
       }
     },
-    async openRunLog(run) {
+    async fetchRunLog(runId) {
       this.runLog = "";
       try {
-        const r = await api.get(`/runs/${run.id}/log`);
+        const r = await api.get(`/runs/${runId}/log`);
         const err = (r.error_text || "").trim();
         const log = (r.log_text || "").trim();
         this.runLog = [err ? `ERROR:\n${err}` : "", log].filter(Boolean).join("\n\n");
       } catch (e) {
         this.error = String(e);
+      }
+    },
+    async openRunLog(run) {
+      this.selectedRunId = run.id;
+      await this.fetchRunLog(run.id);
+    },
+    async pollActive() {
+      if (this.pollInFlight) return;
+      this.pollInFlight = true;
+      try {
+        // Keep dashboard + jobs fresh (last_run_status changes).
+        await Promise.all([this.loadDashboard(), this.loadJobs()]);
+
+        // If a job is selected, refresh its runs.
+        if (this.selectedJob?.id) {
+          await this.loadRuns(this.selectedJob.id);
+        }
+
+        // If a run log is open and still running - refresh its log.
+        if (this.selectedRunId && Array.isArray(this.runs) && this.runs.length) {
+          const r = this.runs.find((x) => x.id === this.selectedRunId);
+          if (r && r.status === "running") {
+            await this.fetchRunLog(this.selectedRunId);
+          }
+        }
+      } catch (e) {
+        // Don't spam UI with transient polling errors.
+        this.error = String(e);
+      } finally {
+        this.pollInFlight = false;
       }
     },
   },
@@ -210,7 +259,7 @@ const App = {
         <div class="subtitle">Централизованные бэкапы PostgreSQL / MongoDB / S3(MinIO)</div>
       </div>
       <div class="row">
-        <button class="btn" @click="refreshAll" :disabled="loading">Обновить</button>
+        <button class="btn" @click="refreshAll({ sync: true })" :disabled="loading">Обновить</button>
       </div>
     </div>
 
