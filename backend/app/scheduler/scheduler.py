@@ -38,8 +38,30 @@ class SchedulerManager:
     def sync_from_db(self) -> None:
         with SessionLocal() as db:
             jobs = db.scalars(select(Job).where(Job.enabled == True)).all()  # noqa: E712
+            enabled_ids = {j.id for j in jobs}
             for job in jobs:
                 self.upsert_job(job.id, job.schedule_cron)
+
+        # Unschedule jobs that are no longer enabled / removed.
+        if not self._started:
+            return
+        try:
+            for aps_job in self._scheduler.get_jobs():
+                jid = str(getattr(aps_job, "id", "") or "")
+                if not jid.startswith("job:"):
+                    continue
+                try:
+                    job_id = int(jid.split(":", 1)[1])
+                except Exception:
+                    continue
+                if job_id not in enabled_ids:
+                    try:
+                        self._scheduler.remove_job(jid)
+                    except Exception:
+                        pass
+        except Exception:
+            # best-effort cleanup
+            pass
 
     def upsert_job(self, job_id: int, cron_expr: str) -> None:
         if not self._started:

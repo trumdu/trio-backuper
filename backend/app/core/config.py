@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     log_dir: str = Field(default="/data/logs", alias="LOG_DIR")
     backup_root: str = Field(default="/data/backups", alias="BACKUP_ROOT")
 
+    config_path: str = Field(default="config.json", alias="CONFIG_PATH")
+
     secrets_fernet_key: str = Field(alias="SECRETS_FERNET_KEY")
 
     max_concurrent_jobs: int = Field(default=2, alias="MAX_CONCURRENT_JOBS")

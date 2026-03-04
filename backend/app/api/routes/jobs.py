@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from backend.app.backups.runner import enqueue_run
+from backend.app.core.config import settings
 from backend.app.db.session import get_db
 from backend.app.schemas import JobCreate, JobOut, JobUpdate, RunLogOut, RunOut
 from backend.app.scheduler.scheduler import scheduler_manager
+from backend.app.services.config_jobs import sync_jobs_from_config_file
 from backend.app.services.jobs_service import (
-    create_job,
     delete_job,
     get_job_model,
     job_to_out,
@@ -20,6 +22,16 @@ from backend.app.services.runs_service import get_run_log, list_runs_for_job
 router = APIRouter()
 
 
+@router.post("/jobs/sync-from-config")
+def jobs_sync_from_config(db: Session = Depends(get_db)) -> dict:
+    try:
+        result = sync_jobs_from_config_file(db, settings.config_path)
+        scheduler_manager.sync_from_db()
+        return {"synced": True, **result}
+    except (ValidationError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/jobs", response_model=list[JobOut])
 def jobs_list(db: Session = Depends(get_db)) -> list[JobOut]:
     return list_jobs(db)
@@ -27,10 +39,10 @@ def jobs_list(db: Session = Depends(get_db)) -> list[JobOut]:
 
 @router.post("/jobs", response_model=JobOut)
 def jobs_create(payload: JobCreate, db: Session = Depends(get_db)) -> JobOut:
-    out = create_job(db, payload)
-    if out.enabled:
-        scheduler_manager.upsert_job(out.id, out.schedule_cron)
-    return out
+    raise HTTPException(
+        status_code=405,
+        detail="Job creation via API is disabled. Add jobs via config.json and call /api/jobs/sync-from-config (or restart the app).",
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)

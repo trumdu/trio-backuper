@@ -74,6 +74,12 @@ const App = {
     fmtBytes,
     badgeClass,
     async refreshAll() {
+      // Sync jobs from config.json (if present), then refresh UI.
+      try {
+        await api.post("/jobs/sync-from-config", {});
+      } catch (e) {
+        this.error = String(e);
+      }
       await Promise.all([this.loadDashboard(), this.loadJobs()]);
     },
     async loadDashboard() {
@@ -102,43 +108,6 @@ const App = {
       } catch (e) {
         this.error = String(e);
       }
-    },
-    newJob() {
-      this.selectedJob = null;
-      this.editMode = true;
-      this.jobForm = {
-        name: "",
-        source_type: "postgres",
-        schedule_cron: "0 2 * * *",
-        destination_path: "default",
-        enabled: true,
-        postgres: {
-          host: "",
-          port: 5432,
-          database: "",
-          user: "",
-          password: "",
-          sslmode: "prefer",
-          format: "custom",
-        },
-        mongo: {
-          host: "",
-          port: 27017,
-          database: "",
-          user: "",
-          password: "",
-          authSource: "admin",
-        },
-        s3: {
-          endpoint: "",
-          access_key: "",
-          secret_key: "",
-          bucket: "",
-          region: "",
-          use_ssl: true,
-          path_style: true,
-        },
-      };
     },
     editJob(job) {
       this.editMode = true;
@@ -183,8 +152,7 @@ const App = {
           const updated = await api.put(`/jobs/${this.selectedJob.id}`, this.jobForm);
           this.selectedJob = updated;
         } else {
-          const created = await api.post(`/jobs`, this.jobForm);
-          this.selectedJob = created;
+          throw new Error("Создание заданий через UI отключено. Добавьте задание в config.json и нажмите «Обновить».");
         }
         this.editMode = false;
         await this.refreshAll();
@@ -243,7 +211,6 @@ const App = {
       </div>
       <div class="row">
         <button class="btn" @click="refreshAll" :disabled="loading">Обновить</button>
-        <button class="btn primary" @click="newJob" :disabled="loading">+ Новое задание</button>
       </div>
     </div>
 
@@ -310,7 +277,7 @@ const App = {
 
         <div class="card" v-if="editMode">
           <div class="metric-label" style="margin-bottom: 10px;">
-            {{ selectedJob?.id ? 'Редактирование задания' : 'Новое задание' }}
+            {{ selectedJob?.id ? 'Редактирование задания' : 'Создание задания отключено' }}
           </div>
 
           <div class="form">
@@ -465,7 +432,7 @@ const App = {
         </div>
 
         <div class="card" v-else>
-          <div class="muted">Выберите задание слева или создайте новое.</div>
+          <div class="muted">Выберите задание слева. Новые задания добавляются через <span class="mono">config.json</span>.</div>
         </div>
       </div>
     </div>

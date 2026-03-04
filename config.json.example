@@ -1,0 +1,34 @@
+[
+  {
+    "name": "prod-postgres",
+    "source_type": "postgres",
+    "schedule_cron": "0 2 * * *",
+    "destination_path": "prod",
+    "enabled": true,
+    "postgres": {
+      "host": "postgres",
+      "port": 5432,
+      "database": "app",
+      "user": "app",
+      "password": "secret",
+      "sslmode": "prefer",
+      "format": "custom"
+    }
+  },
+  {
+    "name": "prod-minio",
+    "source_type": "s3",
+    "schedule_cron": "0 */6 * * *",
+    "destination_path": "prod",
+    "enabled": true,
+    "s3": {
+      "endpoint": "http://minio:9000",
+      "access_key": "minioadmin",
+      "secret_key": "minioadmin",
+      "bucket": "backups",
+      "region": "",
+      "use_ssl": false,
+      "path_style": true
+    }
+  }
+]

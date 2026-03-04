@@ -13,8 +13,9 @@ from backend.app.api.router import api_router
 from backend.app.core.config import settings
 from backend.app.core.logging import configure_logging
 from backend.app.db.models import Base
-from backend.app.db.session import engine
+from backend.app.db.session import SessionLocal, engine
 from backend.app.scheduler.scheduler import scheduler_manager
+from backend.app.services.config_jobs import sync_jobs_from_config_file
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +27,13 @@ async def lifespan(app: FastAPI):
 
     Base.metadata.create_all(bind=engine)
     log.info("db_ready", extra={"db_path": settings.db_path})
+
+    # Sync jobs from config before scheduler reads DB.
+    try:
+        with SessionLocal() as db:
+            sync_jobs_from_config_file(db, settings.config_path)
+    except Exception:
+        log.exception("jobs_config_sync_failed", extra={"config_path": settings.config_path})
 
     await scheduler_manager.start()
     try:
