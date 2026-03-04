@@ -115,6 +115,7 @@ def sync_jobs_from_config_file(db: Session, config_path: str) -> dict[str, int]:
             update_job(db, existing, job_update)
             updated += 1
 
-    log.info("jobs_config_synced", extra={"path": str(chosen), "created": created, "updated": updated})
+    # NOTE: don't use reserved LogRecord attribute names (e.g. "created") in extra.
+    log.info("jobs_config_synced", extra={"path": str(chosen), "jobs_created": created, "jobs_updated": updated})
     return {"created": created, "updated": updated}
 

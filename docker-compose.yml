@@ -8,4 +8,6 @@ services:
       - .env
     volumes:
       - ./data:/data
+      # Jobs are managed via local config.json (keep it out of git)
+      - ./config.json:/app/config.json:ro
     restart: unless-stopped
