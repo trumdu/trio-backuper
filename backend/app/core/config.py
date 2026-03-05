@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     config_path: str = Field(default="config.json", alias="CONFIG_PATH")
 
+    scheduler_tz: str = Field(default="UTC", alias="SCHEDULER_TZ")
+
     secrets_fernet_key: str = Field(alias="SECRETS_FERNET_KEY")
 
     max_concurrent_jobs: int = Field(default=2, alias="MAX_CONCURRENT_JOBS")

@@ -60,6 +60,7 @@ docker compose up --build
 
 - В контейнере используются утилиты `pg_dump` и `mongodump` (устанавливаются в `Dockerfile`).
 - Cron поддерживается в формате **5 полей** (как в crontab): `min hour day month day_of_week`.
+- Расписание cron считается в часовом поясе из `SCHEDULER_TZ` (по умолчанию `UTC`). Например, для запуска в 03:00 по Москве задайте `SCHEDULER_TZ=Europe/Moscow` и `"schedule_cron": "0 3 * * *"`.
 
 ## Примеры заданий (JSON)
 

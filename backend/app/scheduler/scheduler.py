@@ -2,21 +2,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
+from backend.app.backups.runner import enqueue_run, shutdown_running_tasks
+from backend.app.core.config import settings
 from backend.app.db.models import Job
 from backend.app.db.session import SessionLocal
-from backend.app.backups.runner import enqueue_run, shutdown_running_tasks
 
 log = logging.getLogger(__name__)
 
 
+def _scheduler_timezone():
+    try:
+        return ZoneInfo(settings.scheduler_tz)
+    except Exception:
+        return ZoneInfo("UTC")
+
+
 class SchedulerManager:
     def __init__(self) -> None:
-        self._scheduler = AsyncIOScheduler(timezone="UTC")
+        self._tz = _scheduler_timezone()
+        self._scheduler = AsyncIOScheduler(timezone=self._tz)
         self._started = False
 
     async def start(self) -> None:
@@ -25,7 +35,7 @@ class SchedulerManager:
         self._scheduler.start()
         self._started = True
         self.sync_from_db()
-        log.info("scheduler_started")
+        log.info("scheduler_started", extra={"timezone": settings.scheduler_tz})
 
     async def shutdown(self) -> None:
         if not self._started:
@@ -66,13 +76,14 @@ class SchedulerManager:
     def upsert_job(self, job_id: int, cron_expr: str) -> None:
         if not self._started:
             return
-        trigger = CronTrigger.from_crontab(cron_expr, timezone="UTC")
+        trigger = CronTrigger.from_crontab(cron_expr, timezone=self._tz)
         aps_id = f"job:{job_id}"
 
-        def _fire():
-            asyncio.create_task(enqueue_run(job_id, reason="schedule"))
+        async def _fire():
+            # AsyncIOScheduler умеет выполнять корутины, дополнительный create_task не нужен.
+            await enqueue_run(job_id, reason="schedule")
 
-        self._scheduler.add_job(
+        job = self._scheduler.add_job(
             _fire,
             trigger=trigger,
             id=aps_id,
@@ -81,7 +92,16 @@ class SchedulerManager:
             coalesce=True,
             misfire_grace_time=60,
         )
-        log.info("job_scheduled", extra={"job_id": job_id, "cron": cron_expr})
+        next_run = getattr(job, "next_run_time", None)
+        log.info(
+            "job_scheduled",
+            extra={
+                "job_id": job_id,
+                "cron": cron_expr,
+                "timezone": settings.scheduler_tz,
+                "next_run": str(next_run) if next_run else None,
+            },
+        )
 
     def remove_job(self, job_id: int) -> None:
         if not self._started:
