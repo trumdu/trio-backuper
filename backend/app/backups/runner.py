@@ -70,6 +70,7 @@ async def _run_job(job_id: int, *, reason: str) -> None:
             db.commit()
             db.refresh(run)
 
+            run_dir: Path | None = None
             try:
                 run_dir = make_run_dir(job.destination_path, job.name, ts=run.started_at)
                 actions: list[str] = [f"run_dir={run_dir}\n", f"source_type={job.source_type}\n"]
@@ -107,6 +108,15 @@ async def _run_job(job_id: int, *, reason: str) -> None:
                 db.commit()
                 log.info("job_run_success", extra={"job_id": job_id, "run_id": run.id, "out": str(out_path)})
             except asyncio.CancelledError:
+                if run_dir is not None and run_dir.exists():
+                    try:
+                        shutil.rmtree(run_dir, ignore_errors=True)
+                        log.info("run_dir_removed_on_failure", extra={"run_id": run.id, "path": str(run_dir)})
+                    except Exception as cleanup_err:
+                        log.warning(
+                            "run_dir_cleanup_failed",
+                            extra={"run_id": run.id, "path": str(run_dir), "error": str(cleanup_err)},
+                        )
                 run.finished_at = datetime.utcnow()
                 run.status = RunStatus.failed
                 run.error_text = _truncate((run.error_text or "") + "\nCancelled\n")
@@ -114,6 +124,15 @@ async def _run_job(job_id: int, *, reason: str) -> None:
                 db.commit()
                 raise
             except Exception as e:
+                if run_dir is not None and run_dir.exists():
+                    try:
+                        shutil.rmtree(run_dir, ignore_errors=True)
+                        log.info("run_dir_removed_on_failure", extra={"run_id": run.id, "path": str(run_dir)})
+                    except Exception as cleanup_err:
+                        log.warning(
+                            "run_dir_cleanup_failed",
+                            extra={"run_id": run.id, "path": str(run_dir), "error": str(cleanup_err)},
+                        )
                 run.finished_at = datetime.utcnow()
                 run.status = RunStatus.failed
                 run.error_text = _truncate(str(e))
