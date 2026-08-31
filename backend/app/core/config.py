@@ -31,7 +31,19 @@ class Settings(BaseSettings):
     max_backup_age_days: Optional[int] = Field(default=30, alias="MAX_BACKUP_AGE_DAYS")
     max_backup_total_bytes: Optional[int] = Field(default=None, alias="MAX_BACKUP_TOTAL_BYTES")
 
-    @field_validator("max_backup_age_days", "max_backup_total_bytes", mode="before")
+    telegram_bot_token: Optional[str] = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
+    telegram_api_url: str = Field(default="https://api.telegram.org", alias="TELEGRAM_API_URL")
+    telegram_chat_id: Optional[str] = Field(default=None, alias="TELEGRAM_CHAT_ID")
+    telegram_notify_on_failure: bool = Field(default=True, alias="TELEGRAM_NOTIFY_ON_FAILURE")
+    telegram_notify_on_success: bool = Field(default=False, alias="TELEGRAM_NOTIFY_ON_SUCCESS")
+
+    @field_validator(
+        "max_backup_age_days",
+        "max_backup_total_bytes",
+        "telegram_bot_token",
+        "telegram_chat_id",
+        mode="before",
+    )
     @classmethod
     def _empty_str_to_none(cls, v):
         if v == "":

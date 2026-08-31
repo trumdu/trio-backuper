@@ -9,7 +9,8 @@ from typing import Any
 
 from sqlalchemy import select
 
-from backend.app.backups.compress import to_targz
+from backend.app.backups.compress import to_targz, verify_targz
+from backend.app.backups.disk import ensure_disk_space, is_no_space_error
 from backend.app.backups.mongo import backup_mongodump, test_connection as mongo_test_connection
 from backend.app.backups.postgres import backup_pg_dump, test_connection as postgres_test_connection
 from backend.app.backups.retention import cleanup_job_dir
@@ -19,6 +20,7 @@ from backend.app.core.config import settings
 from backend.app.db.models import BackupRun, Job, JobSourceType, RunStatus
 from backend.app.db.session import SessionLocal
 from backend.app.services.runtime_config import get_mongo_config, get_postgres_config, get_s3_config
+from backend.app.services.telegram import notify_run_finished
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +32,48 @@ def _truncate(s: str) -> str:
     if len(s) <= settings.run_log_max_chars:
         return s
     return s[-settings.run_log_max_chars :]
+
+
+def _last_success_size_bytes(db, job_id: int) -> int | None:
+    size = db.scalar(
+        select(BackupRun.size_bytes)
+        .where(
+            BackupRun.job_id == job_id,
+            BackupRun.status == RunStatus.success,
+            BackupRun.size_bytes.is_not(None),
+        )
+        .order_by(BackupRun.finished_at.desc())
+        .limit(1)
+    )
+    return int(size) if size else None
+
+
+def _preflight_disk_check(run_dir: Path, estimate_bytes: int, *, context: str) -> None:
+    ensure_disk_space(run_dir, estimate_bytes, context=context)
+
+
+def _compress_raw(raw_path: Path, archive: Path, *, context: str) -> None:
+    raw_size = dir_size_bytes(raw_path)
+    if raw_size == 0:
+        raise RuntimeError(f"Raw backup empty: {raw_path}")
+    ensure_disk_space(archive.parent, raw_size, context=context)
+    to_targz(raw_path, archive)
+
+
+def _log_disk_space_failure(job_id: int, run_id: int, exc: Exception) -> None:
+    if not is_no_space_error(exc):
+        return
+    log.error(
+        "disk_space_exhausted",
+        extra={"job_id": job_id, "run_id": run_id, "error": str(exc)},
+    )
+
+
+def _schedule_telegram_notify(*, job: Job, run: BackupRun, reason: str) -> None:
+    asyncio.create_task(
+        notify_run_finished(job=job, run=run, reason=reason),
+        name=f"telegram-{run.id}",
+    )
 
 
 async def enqueue_run(job_id: int, *, reason: str = "manual") -> dict[str, Any]:
@@ -75,6 +119,10 @@ async def _run_job(job_id: int, *, reason: str) -> None:
                 run_dir = make_run_dir(job.destination_path, job.name, ts=run.started_at)
                 actions: list[str] = [f"run_dir={run_dir}\n", f"source_type={job.source_type}\n"]
 
+                last_size = _last_success_size_bytes(db, job_id)
+                if last_size:
+                    _preflight_disk_check(run_dir, last_size, context="preflight")
+
                 if job.source_type == JobSourceType.postgres:
                     out_path, size, log_text = await _do_postgres(job, run_dir)
                 elif job.source_type == JobSourceType.mongo:
@@ -87,6 +135,7 @@ async def _run_job(job_id: int, *, reason: str) -> None:
                     raise RuntimeError(f"Unknown source_type: {job.source_type}")
 
                 actions.append(log_text + "\n")
+                actions.append(await _verify_backup_archives(out_path, job.source_type) + "\n")
 
                 # retention: apply within job folder
                 job_dir = run_dir.parent
@@ -107,6 +156,7 @@ async def _run_job(job_id: int, *, reason: str) -> None:
                 db.add(run)
                 db.commit()
                 log.info("job_run_success", extra={"job_id": job_id, "run_id": run.id, "out": str(out_path)})
+                _schedule_telegram_notify(job=job, run=run, reason=reason)
             except asyncio.CancelledError:
                 if run_dir is not None and run_dir.exists():
                     try:
@@ -122,6 +172,7 @@ async def _run_job(job_id: int, *, reason: str) -> None:
                 run.error_text = _truncate((run.error_text or "") + "\nCancelled\n")
                 db.add(run)
                 db.commit()
+                _schedule_telegram_notify(job=job, run=run, reason=reason)
                 raise
             except Exception as e:
                 if run_dir is not None and run_dir.exists():
@@ -139,7 +190,24 @@ async def _run_job(job_id: int, *, reason: str) -> None:
                 run.log_text = _truncate(run.log_text or "")
                 db.add(run)
                 db.commit()
+                _log_disk_space_failure(job_id, run.id, e)
                 log.exception("job_run_failed", extra={"job_id": job_id, "run_id": run.id})
+                _schedule_telegram_notify(job=job, run=run, reason=reason)
+
+
+async def _verify_backup_archives(out_path: Path, source_type: JobSourceType) -> str:
+    if source_type == JobSourceType.all:
+        archives = sorted(out_path.glob("*.tar.gz"))
+        if not archives:
+            raise RuntimeError(f"No archives found in {out_path}")
+        lines: list[str] = []
+        for archive in archives:
+            line = await asyncio.to_thread(verify_targz, archive)
+            lines.append(line)
+        return "\n".join(lines)
+
+    line = await asyncio.to_thread(verify_targz, out_path)
+    return line
 
 
 async def _do_postgres(job: Job, run_dir: Path) -> tuple[Path, int, str]:
@@ -148,7 +216,7 @@ async def _do_postgres(job: Job, run_dir: Path) -> tuple[Path, int, str]:
         raise RuntimeError("Postgres config missing")
     raw_path, src_log = await backup_pg_dump(cfg, out_dir=run_dir)
     archive = run_dir / "postgres.tar.gz"
-    to_targz(raw_path, archive)
+    _compress_raw(raw_path, archive, context="postgres")
     try:
         raw_path.unlink(missing_ok=True)
     except Exception:
@@ -162,7 +230,7 @@ async def _do_mongo(job: Job, run_dir: Path) -> tuple[Path, int, str]:
         raise RuntimeError("Mongo config missing")
     raw_dir, src_log = await backup_mongodump(cfg, out_dir=run_dir)
     archive = run_dir / "mongo.tar.gz"
-    to_targz(raw_dir, archive)
+    _compress_raw(raw_dir, archive, context="mongo")
     shutil.rmtree(raw_dir, ignore_errors=True)
     return archive, archive.stat().st_size, src_log
 
@@ -173,7 +241,7 @@ async def _do_s3(job: Job, run_dir: Path) -> tuple[Path, int, str]:
         raise RuntimeError("S3 config missing")
     raw_dir, src_log = await backup_bucket(cfg, out_dir=run_dir)
     archive = run_dir / "s3.tar.gz"
-    to_targz(raw_dir, archive)
+    _compress_raw(raw_dir, archive, context="s3")
     shutil.rmtree(raw_dir, ignore_errors=True)
     return archive, archive.stat().st_size, src_log
 

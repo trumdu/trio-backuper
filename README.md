@@ -42,8 +42,10 @@ docker compose up --build
 - **MongoDB**: `mongodump`
 - **S3/MinIO**: рекурсивная выгрузка всех объектов бакета
 - **Пост‑обработка**: автоматическое сжатие в `.tar.gz`, удаление исходников после успешного сжатия
+- **Проверка целостности**: после создания архива выполняется чтение всех записей `.tar.gz`; при ошибке запуск помечается как failed
 - **Retention**: удаление старых бэкапов (по возрасту и/или по общей квоте)
 - **Безопасность**: секреты шифруются в SQLite (Fernet), в API/UI возвращаются замаскированными
+- **Telegram**: уведомления об ошибках бэкапа (и опционально об успехе) через Bot API
 
 ## API (основное)
 
@@ -55,6 +57,18 @@ docker compose up --build
 - `GET /api/jobs/{id}/runs`
 - `POST /api/jobs/{id}/run-now`
 - `GET /api/runs/{run_id}/log`
+
+## Telegram-уведомления
+
+Задайте в `.env`:
+
+- `TELEGRAM_BOT_TOKEN` — токен бота
+- `TELEGRAM_CHAT_ID` — ID чата или канала
+- `TELEGRAM_API_URL` — базовый URL API (по умолчанию `https://api.telegram.org`)
+- `TELEGRAM_NOTIFY_ON_FAILURE=true` — уведомлять об ошибках (по умолчанию включено)
+- `TELEGRAM_NOTIFY_ON_SUCCESS=false` — уведомлять об успешных бэкапах (по умолчанию выключено)
+
+Если `TELEGRAM_BOT_TOKEN` или `TELEGRAM_CHAT_ID` не заданы, уведомления отключены.
 
 ## Примечания
 
