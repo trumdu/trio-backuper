@@ -8,6 +8,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from backend.app.db.models import BackupRun, Job, JobSourceType, RunStatus
+from backend.app.services.telegram import RunNotifyContext
 
 
 def _reload_telegram(monkeypatch, **env_overrides):
@@ -35,7 +36,20 @@ def _reload_telegram(monkeypatch, **env_overrides):
     return telegram
 
 
-def _make_job(**kwargs) -> Job:
+def _make_ctx(**kwargs) -> RunNotifyContext:
+    return RunNotifyContext(
+        job_id=kwargs.get("job_id", 1),
+        job_name=kwargs.get("job_name", "test-job"),
+        run_id=kwargs.get("run_id", 42),
+        status=kwargs.get("status", RunStatus.success),
+        size_bytes=kwargs.get("size_bytes"),
+        output_path=kwargs.get("output_path"),
+        error_text=kwargs.get("error_text"),
+        reason=kwargs.get("reason", "manual"),
+    )
+
+
+def _make_detached_job(**kwargs) -> Job:
     job = Job(
         name=kwargs.get("name", "test-job"),
         source_type=JobSourceType.postgres,
@@ -47,24 +61,10 @@ def _make_job(**kwargs) -> Job:
     return job
 
 
-def _make_run(**kwargs) -> BackupRun:
-    run = BackupRun(
-        job_id=kwargs.get("job_id", 1),
-        started_at=datetime.utcnow(),
-        status=kwargs.get("status", RunStatus.success),
-        size_bytes=kwargs.get("size_bytes"),
-        output_path=kwargs.get("output_path"),
-        error_text=kwargs.get("error_text"),
-    )
-    run.id = kwargs.get("id", 42)
-    return run
-
-
 @pytest.mark.asyncio
 async def test_send_message_uses_correct_url_and_payload(monkeypatch):
     telegram = _reload_telegram(monkeypatch)
-    job = _make_job()
-    run = _make_run(status=RunStatus.failed, error_text="disk full")
+    ctx = _make_ctx(status=RunStatus.failed, error_text="disk full")
 
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
@@ -75,8 +75,9 @@ async def test_send_message_uses_correct_url_and_payload(monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("backend.app.services.telegram.httpx.AsyncClient", return_value=mock_client):
-        await telegram.notify_run_finished(job=job, run=run, reason="manual")
+        result = await telegram.notify_run_finished(ctx)
 
+    assert result == "telegram: sent"
     mock_post.assert_awaited_once()
     call_args = mock_post.await_args
     assert call_args.args[0] == "https://tg.example.com/bot123:ABC/sendMessage"
@@ -88,8 +89,7 @@ async def test_send_message_uses_correct_url_and_payload(monkeypatch):
 @pytest.mark.asyncio
 async def test_skips_when_token_or_chat_id_missing(monkeypatch):
     telegram = _reload_telegram(monkeypatch, TELEGRAM_BOT_TOKEN="", TELEGRAM_CHAT_ID="")
-    job = _make_job()
-    run = _make_run(status=RunStatus.failed, error_text="boom")
+    ctx = _make_ctx(status=RunStatus.failed, error_text="boom")
 
     mock_post = AsyncMock()
     mock_client = MagicMock()
@@ -98,16 +98,16 @@ async def test_skips_when_token_or_chat_id_missing(monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("backend.app.services.telegram.httpx.AsyncClient", return_value=mock_client):
-        await telegram.notify_run_finished(job=job, run=run, reason="schedule")
+        result = await telegram.notify_run_finished(ctx)
 
+    assert result is None
     mock_post.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_success_not_sent_when_disabled(monkeypatch):
     telegram = _reload_telegram(monkeypatch, TELEGRAM_NOTIFY_ON_SUCCESS="false")
-    job = _make_job()
-    run = _make_run(status=RunStatus.success, size_bytes=100, output_path="/data/out.tar.gz")
+    ctx = _make_ctx(status=RunStatus.success, size_bytes=100, output_path="/data/out.tar.gz")
 
     mock_post = AsyncMock()
     mock_client = MagicMock()
@@ -116,16 +116,16 @@ async def test_success_not_sent_when_disabled(monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("backend.app.services.telegram.httpx.AsyncClient", return_value=mock_client):
-        await telegram.notify_run_finished(job=job, run=run, reason="manual")
+        result = await telegram.notify_run_finished(ctx)
 
+    assert result is None
     mock_post.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_success_sent_when_enabled(monkeypatch):
     telegram = _reload_telegram(monkeypatch, TELEGRAM_NOTIFY_ON_SUCCESS="true")
-    job = _make_job()
-    run = _make_run(status=RunStatus.success, size_bytes=2048, output_path="/data/out.tar.gz")
+    ctx = _make_ctx(status=RunStatus.success, size_bytes=2048, output_path="/data/out.tar.gz", reason="schedule")
 
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
@@ -136,8 +136,9 @@ async def test_success_sent_when_enabled(monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("backend.app.services.telegram.httpx.AsyncClient", return_value=mock_client):
-        await telegram.notify_run_finished(job=job, run=run, reason="schedule")
+        result = await telegram.notify_run_finished(ctx)
 
+    assert result == "telegram: sent"
     mock_post.assert_awaited_once()
     assert "✅ Backup success" in mock_post.await_args.kwargs["json"]["text"]
 
@@ -145,8 +146,7 @@ async def test_success_sent_when_enabled(monkeypatch):
 @pytest.mark.asyncio
 async def test_failure_sent_when_enabled(monkeypatch):
     telegram = _reload_telegram(monkeypatch, TELEGRAM_NOTIFY_ON_FAILURE="true")
-    job = _make_job()
-    run = _make_run(status=RunStatus.failed, error_text="connection refused")
+    ctx = _make_ctx(status=RunStatus.failed, error_text="connection refused")
 
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
@@ -157,18 +157,18 @@ async def test_failure_sent_when_enabled(monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("backend.app.services.telegram.httpx.AsyncClient", return_value=mock_client):
-        await telegram.notify_run_finished(job=job, run=run, reason="manual")
+        result = await telegram.notify_run_finished(ctx)
 
+    assert result == "telegram: sent"
     mock_post.assert_awaited_once()
     assert "connection refused" in mock_post.await_args.kwargs["json"]["text"]
 
 
 def test_format_message_truncates_long_error(monkeypatch):
     telegram = _reload_telegram(monkeypatch)
-    job = _make_job()
-    run = _make_run(status=RunStatus.failed, error_text="x" * 5000)
+    ctx = _make_ctx(status=RunStatus.failed, error_text="x" * 5000)
 
-    text = telegram._format_message(job=job, run=run, reason="manual")
+    text = telegram._format_message(ctx)
 
     assert len(text) == 4096
     assert text.endswith("...")
@@ -177,8 +177,7 @@ def test_format_message_truncates_long_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_http_error_does_not_raise(monkeypatch):
     telegram = _reload_telegram(monkeypatch)
-    job = _make_job()
-    run = _make_run(status=RunStatus.failed, error_text="err")
+    ctx = _make_ctx(status=RunStatus.failed, error_text="err")
 
     mock_post = AsyncMock(side_effect=httpx.HTTPError("network"))
     mock_client = MagicMock()
@@ -187,4 +186,47 @@ async def test_http_error_does_not_raise(monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("backend.app.services.telegram.httpx.AsyncClient", return_value=mock_client):
-        await telegram.notify_run_finished(job=job, run=run, reason="manual")
+        result = await telegram.notify_run_finished(ctx)
+
+    assert result == "telegram: failed: network"
+
+
+@pytest.mark.asyncio
+async def test_notify_works_without_sqlalchemy_session(monkeypatch):
+    telegram = _reload_telegram(monkeypatch, TELEGRAM_NOTIFY_ON_SUCCESS="true")
+
+    job = _make_detached_job(name="detached-job")
+    run = BackupRun(
+        job_id=job.id,
+        started_at=datetime.utcnow(),
+        status=RunStatus.success,
+        size_bytes=512,
+        output_path="/data/out.tar.gz",
+    )
+    run.id = 99
+
+    ctx = RunNotifyContext(
+        job_id=job.id,
+        job_name=job.name,
+        run_id=run.id,
+        status=run.status,
+        size_bytes=run.size_bytes,
+        output_path=run.output_path,
+        error_text=run.error_text,
+        reason="manual",
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_post = AsyncMock(return_value=mock_response)
+    mock_client = MagicMock()
+    mock_client.post = mock_post
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.app.services.telegram.httpx.AsyncClient", return_value=mock_client):
+        result = await telegram.notify_run_finished(ctx)
+
+    assert result == "telegram: sent"
+    mock_post.assert_awaited_once()
+    assert "detached-job" in mock_post.await_args.kwargs["json"]["text"]

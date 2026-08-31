@@ -8,11 +8,14 @@ from typing import Any
 
 import boto3
 from botocore.config import Config
+from urllib3.exceptions import InsecureRequestWarning
 
 from backend.app.backups.retry import retry_async
 from backend.app.backups.base import BackupSource, RawBackup
 
 log = logging.getLogger(__name__)
+
+_insecure_warning_suppressed = False
 
 
 def _endpoint_url(cfg: dict[str, Any]) -> str:
@@ -24,6 +27,15 @@ def _endpoint_url(cfg: dict[str, Any]) -> str:
 
 
 def _client(cfg: dict[str, Any]):
+    global _insecure_warning_suppressed
+
+    verify_ssl = bool(cfg.get("verify_ssl", True))
+    if not verify_ssl and not _insecure_warning_suppressed:
+        import urllib3
+
+        urllib3.disable_warnings(InsecureRequestWarning)
+        _insecure_warning_suppressed = True
+
     addressing_style = "path" if bool(cfg.get("path_style", True)) else "virtual"
     c = Config(
         s3={"addressing_style": addressing_style},
@@ -38,7 +50,7 @@ def _client(cfg: dict[str, Any]):
         aws_secret_access_key=str(cfg.get("secret_key") or ""),
         region_name=str(cfg["region"]) if cfg.get("region") else None,
         config=c,
-        verify=bool(cfg.get("verify_ssl", True)),
+        verify=verify_ssl,
     )
 
 

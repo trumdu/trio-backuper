@@ -20,7 +20,7 @@ from backend.app.core.config import settings
 from backend.app.db.models import BackupRun, Job, JobSourceType, RunStatus
 from backend.app.db.session import SessionLocal
 from backend.app.services.runtime_config import get_mongo_config, get_postgres_config, get_s3_config
-from backend.app.services.telegram import notify_run_finished
+from backend.app.services.telegram import RunNotifyContext, notify_run_finished
 
 log = logging.getLogger(__name__)
 
@@ -69,11 +69,24 @@ def _log_disk_space_failure(job_id: int, run_id: int, exc: Exception) -> None:
     )
 
 
-def _schedule_telegram_notify(*, job: Job, run: BackupRun, reason: str) -> None:
-    asyncio.create_task(
-        notify_run_finished(job=job, run=run, reason=reason),
-        name=f"telegram-{run.id}",
+async def _telegram_log_line(*, job: Job, run: BackupRun, reason: str) -> str | None:
+    ctx = RunNotifyContext(
+        job_id=job.id,
+        job_name=job.name,
+        run_id=run.id,
+        status=run.status,
+        size_bytes=run.size_bytes,
+        output_path=run.output_path,
+        error_text=run.error_text,
+        reason=reason,
     )
+    return await notify_run_finished(ctx)
+
+
+def _append_telegram_log(log_text: str | None, tg_line: str | None) -> str:
+    if not tg_line:
+        return log_text or ""
+    return _truncate((log_text or "") + f"\n{tg_line}\n")
 
 
 async def enqueue_run(job_id: int, *, reason: str = "manual") -> dict[str, Any]:
@@ -153,10 +166,11 @@ async def _run_job(job_id: int, *, reason: str) -> None:
                 run.output_path = str(out_path)
                 run.log_text = _truncate((run.log_text or "") + "\n".join(actions))
                 run.error_text = None
+                tg_line = await _telegram_log_line(job=job, run=run, reason=reason)
+                run.log_text = _append_telegram_log(run.log_text, tg_line)
                 db.add(run)
                 db.commit()
                 log.info("job_run_success", extra={"job_id": job_id, "run_id": run.id, "out": str(out_path)})
-                _schedule_telegram_notify(job=job, run=run, reason=reason)
             except asyncio.CancelledError:
                 if run_dir is not None and run_dir.exists():
                     try:
@@ -170,9 +184,10 @@ async def _run_job(job_id: int, *, reason: str) -> None:
                 run.finished_at = datetime.utcnow()
                 run.status = RunStatus.failed
                 run.error_text = _truncate((run.error_text or "") + "\nCancelled\n")
+                tg_line = await _telegram_log_line(job=job, run=run, reason=reason)
+                run.log_text = _append_telegram_log(run.log_text, tg_line)
                 db.add(run)
                 db.commit()
-                _schedule_telegram_notify(job=job, run=run, reason=reason)
                 raise
             except Exception as e:
                 if run_dir is not None and run_dir.exists():
@@ -188,11 +203,12 @@ async def _run_job(job_id: int, *, reason: str) -> None:
                 run.status = RunStatus.failed
                 run.error_text = _truncate(str(e))
                 run.log_text = _truncate(run.log_text or "")
+                tg_line = await _telegram_log_line(job=job, run=run, reason=reason)
+                run.log_text = _append_telegram_log(run.log_text, tg_line)
                 db.add(run)
                 db.commit()
                 _log_disk_space_failure(job_id, run.id, e)
                 log.exception("job_run_failed", extra={"job_id": job_id, "run_id": run.id})
-                _schedule_telegram_notify(job=job, run=run, reason=reason)
 
 
 async def _verify_backup_archives(out_path: Path, source_type: JobSourceType) -> str:
